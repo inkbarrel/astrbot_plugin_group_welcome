@@ -29,6 +29,13 @@
     "type": "bool",
     "default": false
   },
+    "llm_provider": {
+    "label": "🧠 AI 模型提供商",
+    "description": "选择用于生成欢迎语的模型。留空则使用系统默认的当前模型。",
+    "type": "string",
+    "_special": "select_provider",
+    "default": ""
+  },
   "ai_welcome_prompt": {
     "label": "📝 AI 提示词 (Prompt)",
     "description": "指导 AI 如何生成欢迎语。变量：{name} (昵称)",
