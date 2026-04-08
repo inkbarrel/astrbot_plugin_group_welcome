@@ -42,7 +42,7 @@ def _serialize_group_templates(templates: dict) -> str:
     "group_welcome",
     "YourName",
     "入群欢迎插件：支持 OneBot 协议下的 @新成员、AI 个性化欢迎、群人数统计及黑白名单。",
-    "2.0.0",
+    "2.1.0",
 )
 class GroupWelcomePlugin(Star):
 
@@ -273,12 +273,32 @@ class GroupWelcomePlugin(Star):
 
     async def _gen_ai_welcome(self, name: str) -> str:
         """
-        使用 str.replace() 替代 str.format() 进行占位符替换，
-        避免用户配置中出现 {user}、{nickname} 等非预期占位符时触发 KeyError。
+        使用指定的 LLM Provider 生成欢迎语。
         """
         try:
-            provider = self.context.get_using_provider()
-            if not provider: return ""
+            provider_id = self.config.get("llm_provider", "")
+            provider = None
+            
+            if provider_id:
+                # 尝试通过 provider_manager 安全地获取指定模型
+                try:
+                    pm = getattr(self.context, "provider_manager", None)
+                    if pm:
+                        if hasattr(pm, "instances"):
+                            provider = pm.instances.get(provider_id)
+                        elif hasattr(pm, "providers"):
+                            provider = pm.providers.get(provider_id)
+                except Exception as e:
+                    logger.debug(f"[group_welcome] 获取指定模型时发生异常: {e}")
+                    
+                if not provider:
+                    logger.warning(f"[group_welcome] 未找到指定的 LLM ({provider_id})，回退到默认模型。")
+                    provider = self.context.get_using_provider()
+            else:
+                provider = self.context.get_using_provider()
+                
+            if not provider: 
+                return ""
 
             prompt_fmt = self.config.get(
                 "ai_welcome_prompt",
@@ -501,4 +521,5 @@ AI 个性欢迎：{"✅ 开启" if self._enable_ai_welcome else "🔕 关闭"}
 冷却时间：{self.config.get("cooldown_seconds", 300)}s
 {"─" * 24}
 {tip}"""
+        yield event.plain_result(result)
         yield event.plain_result(result)
