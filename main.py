@@ -1,9 +1,24 @@
+from __future__ import annotations
+
 import json
 import time
 import asyncio
+import random
+from pathlib import Path
+
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.api import logger, AstrBotConfig
+
+
+WELCOME_MODE_TEXT = "text"
+WELCOME_MODE_AI = "ai"
+DEFAULT_WELCOME_TEMPLATE = "🎉 欢迎 {name} 加入本群！很高兴认识你～{count_text}"
+DEFAULT_AI_PROMPT = (
+    "请根据以下昵称，生成一句简短、温暖、有趣的入群欢迎语"
+    "（不超过30字，不要带引号）：{name}"
+)
+ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 
 def _parse_id_list(value) -> set:
@@ -38,6 +53,19 @@ def _serialize_group_templates(templates: dict) -> str:
     return json.dumps(templates, ensure_ascii=False)
 
 
+def _normalize_welcome_mode(value, default: str = WELCOME_MODE_TEXT) -> str:
+    """兼容中英文配置值，并将欢迎模式规范为 text/ai。"""
+    aliases = {
+        "text": WELCOME_MODE_TEXT,
+        "fixed": WELCOME_MODE_TEXT,
+        "固定欢迎词": WELCOME_MODE_TEXT,
+        "ai": WELCOME_MODE_AI,
+        "固定ai提示词": WELCOME_MODE_AI,
+        "固定 AI 提示词": WELCOME_MODE_AI,
+    }
+    return aliases.get(str(value or "").strip(), default)
+
+
 class GroupWelcomePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -57,6 +85,24 @@ class GroupWelcomePlugin(Star):
         self._enable_member_count: bool = config.get("enable_member_count", True)
         self._enable_private_rules: bool = config.get("enable_private_rules", False)
         self._enable_ai_welcome: bool = config.get("enable_ai_welcome", False)
+        configured_mode = _normalize_welcome_mode(
+            config.get("welcome_mode"),
+            WELCOME_MODE_TEXT,
+        )
+        # AstrBot 更新 Schema 时会先补入 welcome_mode=text。旧配置若曾开启
+        # enable_ai_welcome，需要在第一次加载 v3 时迁移成新模式并清除旧开关，
+        # 避免用户之后主动选择 text 又被旧值覆盖。
+        if self._enable_ai_welcome:
+            self._welcome_mode = WELCOME_MODE_AI
+            self._enable_ai_welcome = False
+            self.config["welcome_mode"] = WELCOME_MODE_AI
+            self.config["enable_ai_welcome"] = False
+            self.config.save_config()
+        else:
+            self._welcome_mode = configured_mode
+        self._enable_welcome_image = bool(
+            config.get("enable_welcome_image", False)
+        )
 
         self._whitelist: set = _parse_id_list(config.get("group_whitelist", []))
         self._blacklist: set = _parse_id_list(config.get("group_blacklist", []))
@@ -64,7 +110,8 @@ class GroupWelcomePlugin(Star):
         # 迁移旧版字符串格式 → list，避免 UI 把字符串逐字符展开
         self._migrate_id_lists()
 
-        self.cooldown_file = StarTools.get_data_dir() / "cooldowns.json"
+        self.data_dir = StarTools.get_data_dir()
+        self.cooldown_file = self.data_dir / "cooldowns.json"
 
         # 加载持久化的冷却数据
         self._load_cooldowns()
@@ -218,8 +265,9 @@ class GroupWelcomePlugin(Star):
             if count:
                 count_text = f"\n你是当前群里第 {count} 位成员！"
 
-        # 生成欢迎语
-        template = self._get_welcome_template(group_id)
+        # 从全局设置和每群设置中合并本次欢迎配置。
+        group_settings = self._get_group_settings(group_id)
+        template = group_settings["welcome_template"]
 
         try:
             welcome_text = template.format(name=name, count_text=count_text)
@@ -227,12 +275,24 @@ class GroupWelcomePlugin(Star):
             logger.warning(f"[group_welcome] 群 {group_id} 欢迎语模板格式错误: {e}")
             welcome_text = f"🎉 欢迎 {name} 加入本群！{count_text}"
 
-        if self._enable_ai_welcome:
-            ai_text = await self._gen_ai_welcome(name)
+        if group_settings["mode"] == WELCOME_MODE_AI:
+            ai_text = await self._gen_ai_welcome(
+                name=name,
+                group_id=group_id,
+                count_text=count_text,
+                prompt_fmt=group_settings["ai_prompt"],
+            )
             if ai_text:
-                welcome_text += f"\n\n✨ {ai_text}"
+                welcome_text = ai_text
 
-        await self._send_group_welcome(client, group_id, user_id, welcome_text)
+        image_path = self._choose_welcome_image(group_settings)
+        await self._send_group_welcome(
+            client,
+            group_id,
+            user_id,
+            welcome_text,
+            image_path=image_path,
+        )
 
         if self._enable_private_rules:
             await self._send_private_rules(client, user_id)
@@ -243,9 +303,116 @@ class GroupWelcomePlugin(Star):
         return group_id not in self._blacklist
 
     def _get_welcome_template(self, group_id: str) -> str:
-        templates = self._load_group_templates()
-        default = "🎉 欢迎 {name} 加入本群！很高兴认识你～{count_text}"
-        return templates.get(group_id, self.config.get("welcome_template", default))
+        return self._get_group_settings(group_id)["welcome_template"]
+
+    def _get_group_settings(self, group_id: str) -> dict:
+        """
+        合并全局默认设置与指定群设置。
+
+        group_templates 同时兼容旧格式：
+        {"群号": "欢迎词"}
+
+        以及新版格式：
+        {
+          "群号": {
+            "mode": "text|ai",
+            "welcome_template": "...",
+            "ai_prompt": "...",
+            "send_image": true,
+            "images": ["图片文件名或上传后路径"]
+          }
+        }
+        """
+        default_template = self.config.get(
+            "welcome_template",
+            DEFAULT_WELCOME_TEMPLATE,
+        )
+        default_prompt = self.config.get("ai_welcome_prompt", DEFAULT_AI_PROMPT)
+        settings = {
+            "mode": self._welcome_mode,
+            "welcome_template": default_template,
+            "ai_prompt": default_prompt,
+            "send_image": self._enable_welcome_image,
+            "images": [],
+        }
+
+        raw_group_setting = self._load_group_templates().get(group_id)
+        if isinstance(raw_group_setting, str):
+            # v2.3.0 及更早版本：群号直接映射到固定欢迎词。
+            settings["welcome_template"] = raw_group_setting
+            return settings
+
+        if not isinstance(raw_group_setting, dict):
+            return settings
+
+        settings["mode"] = _normalize_welcome_mode(
+            raw_group_setting.get("mode"),
+            settings["mode"],
+        )
+        welcome_template = raw_group_setting.get(
+            "welcome_template",
+            raw_group_setting.get("text"),
+        )
+        if isinstance(welcome_template, str) and welcome_template.strip():
+            settings["welcome_template"] = welcome_template
+
+        ai_prompt = raw_group_setting.get(
+            "ai_prompt",
+            raw_group_setting.get("prompt"),
+        )
+        if isinstance(ai_prompt, str) and ai_prompt.strip():
+            settings["ai_prompt"] = ai_prompt
+
+        if isinstance(raw_group_setting.get("send_image"), bool):
+            settings["send_image"] = raw_group_setting["send_image"]
+
+        images = raw_group_setting.get("images")
+        if isinstance(images, list):
+            settings["images"] = [
+                str(item).strip() for item in images if str(item).strip()
+            ]
+        return settings
+
+    def _choose_welcome_image(self, group_settings: dict) -> str | None:
+        """从 WebUI 上传池中安全地选择一张可用图片。"""
+        if not group_settings.get("send_image"):
+            return None
+
+        configured = self.config.get("welcome_images", [])
+        if not isinstance(configured, list):
+            return None
+
+        requested = group_settings.get("images") or []
+        requested_names = {Path(item).name for item in requested}
+        candidates: list[Path] = []
+        data_root = self.data_dir.resolve(strict=False)
+
+        for raw_path in configured:
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                continue
+            if requested_names and Path(raw_path).name not in requested_names:
+                continue
+
+            image_path = (data_root / raw_path).resolve(strict=False)
+            try:
+                image_path.relative_to(data_root)
+            except ValueError:
+                logger.warning(
+                    f"[group_welcome] 欢迎图片路径越界，已跳过: {raw_path}"
+                )
+                continue
+
+            if (
+                image_path.is_file()
+                and image_path.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS
+            ):
+                candidates.append(image_path)
+
+        if not candidates:
+            if configured:
+                logger.warning("[group_welcome] 未找到可用的欢迎图片，已仅发送文字。")
+            return None
+        return str(random.choice(candidates))
 
     async def _get_member_name(self, client, group_id: str, user_id: str) -> str:
         try:
@@ -273,7 +440,14 @@ class GroupWelcomePlugin(Star):
         except Exception:
             return None
 
-    async def _send_group_welcome(self, client, group_id: str, user_id: str, text: str):
+    async def _send_group_welcome(
+        self,
+        client,
+        group_id: str,
+        user_id: str,
+        text: str,
+        image_path: str | None = None,
+    ):
         try:
             if not group_id.isdigit() or not user_id.isdigit():
                 return
@@ -281,6 +455,16 @@ class GroupWelcomePlugin(Star):
                 {"type": "at", "data": {"qq": user_id}},
                 {"type": "text", "data": {"text": f" {text}"}},
             ]
+            if image_path:
+                message.append(
+                    {
+                        "type": "image",
+                        "data": {
+                            "file": image_path,
+                            "summary": "[欢迎表情包]",
+                        },
+                    }
+                )
             await client.api.call_action(
                 "send_group_msg", group_id=int(group_id), message=message
             )
@@ -299,7 +483,14 @@ class GroupWelcomePlugin(Star):
         except Exception as e:
             logger.warning(f"[group_welcome] 私聊发送群规失败: {e}")
 
-    async def _gen_ai_welcome(self, name: str) -> str:
+    async def _gen_ai_welcome(
+        self,
+        *,
+        name: str,
+        group_id: str,
+        count_text: str,
+        prompt_fmt: str,
+    ) -> str:
         """
         使用指定的 LLM Provider 生成欢迎语。
         """
@@ -321,19 +512,17 @@ class GroupWelcomePlugin(Star):
             if not provider:
                 return ""
 
-            prompt_fmt = self.config.get(
-                "ai_welcome_prompt",
-                "请根据以下昵称，生成一句简短、温暖、有趣的入群欢迎语：{name}",
+            final_prompt = (
+                prompt_fmt.replace("{name}", name)
+                .replace("{group_id}", group_id)
+                .replace("{count_text}", count_text)
             )
-
-            final_prompt = prompt_fmt.replace("{name}", name)
             if not final_prompt.strip():
-                final_prompt = (
-                    f"请根据以下昵称，生成一句简短、温暖、有趣的入群欢迎语：{name}"
-                )
+                final_prompt = DEFAULT_AI_PROMPT.replace("{name}", name)
 
             resp = await provider.text_chat(
-                prompt=final_prompt, session_id=f"gw_{name}"
+                prompt=final_prompt,
+                session_id=f"gw_{group_id}_{name}",
             )
             return resp.completion_text.strip()
         except Exception as e:
@@ -362,7 +551,9 @@ class GroupWelcomePlugin(Star):
     def _save_switches(self):
         self.config["enable_member_count"] = self._enable_member_count
         self.config["enable_private_rules"] = self._enable_private_rules
-        self.config["enable_ai_welcome"] = self._enable_ai_welcome
+        self.config["enable_ai_welcome"] = False
+        self.config["welcome_mode"] = self._welcome_mode
+        self.config["enable_welcome_image"] = self._enable_welcome_image
         self.config.save_config()
 
     def _save_lists(self):
@@ -375,7 +566,13 @@ class GroupWelcomePlugin(Star):
 
     def _save_group_template(self, group_id: str, template: str):
         templates = self._load_group_templates()
-        templates[group_id] = template
+        current = templates.get(group_id)
+        if isinstance(current, dict):
+            current["welcome_template"] = template
+            templates[group_id] = current
+        else:
+            # 保持旧格式简洁，同时新版解析器可直接兼容。
+            templates[group_id] = template
         self.config["group_templates"] = _serialize_group_templates(templates)
         self.config.save_config()
 
@@ -435,17 +632,23 @@ class GroupWelcomePlugin(Star):
     async def toggle_ai(self, event: AstrMessageEvent, action: str = ""):
         action = action.strip().lower()
         if action == "on":
-            self._enable_ai_welcome = True
+            self._enable_ai_welcome = False
+            self._welcome_mode = WELCOME_MODE_AI
             self._save_switches()
-            yield event.plain_result("✅ AI 个性化欢迎语已开启")
+            yield event.plain_result("✅ 已切换为固定 AI 提示词模式")
         elif action == "off":
             self._enable_ai_welcome = False
+            self._welcome_mode = WELCOME_MODE_TEXT
             self._save_switches()
-            yield event.plain_result("🔕 AI 个性化欢迎语已关闭")
+            yield event.plain_result("🔕 已切换为固定欢迎词模式")
         else:
-            status = "开启" if self._enable_ai_welcome else "关闭"
+            status = (
+                "固定 AI 提示词"
+                if self._welcome_mode == WELCOME_MODE_AI
+                else "固定欢迎词"
+            )
             yield event.plain_result(
-                f"当前 AI 欢迎语：{status}\n用法：/welcome ai on|off"
+                f"当前欢迎模式：{status}\n用法：/welcome ai on|off"
             )
 
     @welcome.command("set")
@@ -582,7 +785,8 @@ class GroupWelcomePlugin(Star):
 {"─" * 24}
 群人数统计：{"✅ 开启" if self._enable_member_count else "🔕 关闭"}
 私聊群规：{"✅ 开启" if self._enable_private_rules else "🔕 关闭"}
-AI 个性欢迎：{"✅ 开启" if self._enable_ai_welcome else "🔕 关闭"}
+欢迎模式：{"🤖 固定 AI 提示词" if self._welcome_mode == WELCOME_MODE_AI else "📝 固定欢迎词"}
+欢迎表情包：{"✅ 开启" if self._enable_welcome_image else "🔕 关闭"}
 冷却时间：{self.config.get("cooldown_seconds", 300)}s
 {"─" * 24}
 {tip}"""

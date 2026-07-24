@@ -1,69 +1,120 @@
 {
   "welcome_template": {
     "label": "🎉 全局默认欢迎语",
-    "description": "当某群未单独设置欢迎语时使用。",
+    "description": "🎉 全局默认欢迎语",
+    "hint": "固定欢迎词模式下使用。支持 {name}（昵称）和 {count_text}（成员序号）。",
     "type": "text",
     "default": "🎉 欢迎 {name} 加入本群！很高兴认识你～{count_text}"
   },
+  "welcome_mode": {
+    "label": "💬 默认欢迎模式",
+    "description": "💬 默认欢迎模式",
+    "hint": "固定欢迎词：直接发送上面的模板；固定 AI 提示词：调用模型生成完整欢迎词。",
+    "type": "string",
+    "options": [
+      "text",
+      "ai"
+    ],
+    "labels": [
+      "固定欢迎词",
+      "固定 AI 提示词"
+    ],
+    "default": "text"
+  },
   "enable_member_count": {
     "label": "📊 开启群人数统计",
-    "description": "开启后，变量 {count_text} 会被替换为\"你是当前群里第 x 位成员！\"",
+    "description": "📊 显示群成员序号",
+    "hint": "开启后，变量 {count_text} 会被替换为“你是当前群里第 x 位成员！”",
     "type": "bool",
     "default": true
   },
   "enable_private_rules": {
     "label": "📩 开启私聊群规",
-    "description": "新人入群后，尝试私聊发送群规内容",
+    "description": "📩 私聊发送群规",
+    "hint": "新人入群后，尝试私聊发送群规内容。",
     "type": "bool",
     "default": false
   },
   "group_rules": {
     "label": "📜 群规内容",
-    "description": "私聊发送的具体文字内容",
+    "description": "📜 私聊群规内容",
+    "hint": "开启私聊群规后，向新成员发送的具体文字内容。",
     "type": "text",
     "default": "📋 群规：\n1. 禁止广告\n2. 友善交流\n3. 禁止刷屏\n欢迎你的加入！"
   },
   "enable_ai_welcome": {
-    "label": "🤖 开启 AI 个性化欢迎",
-    "description": "调用 LLM 生成一句简短、有趣的欢迎语。",
+    "label": "旧版 AI 开关",
+    "description": "仅用于兼容旧配置，请使用“默认欢迎模式”。",
     "type": "bool",
-    "default": false
+    "default": false,
+    "invisible": true
   },
   "llm_provider": {
     "label": "🧠 AI 模型提供商",
-    "description": "选择用于生成欢迎语的模型。留空则使用系统默认的当前模型。",
+    "description": "🧠 AI 模型提供商",
+    "hint": "选择用于生成欢迎语的模型。留空则使用系统默认的当前模型。",
     "type": "string",
     "_special": "select_provider",
     "default": ""
   },
   "ai_welcome_prompt": {
-    "label": "📝 AI 提示词 (Prompt)",
-    "description": "指导 AI 如何生成欢迎语。变量：{name} (昵称)",
+    "label": "📝 默认 AI 提示词 (Prompt)",
+    "description": "📝 默认 AI 提示词",
+    "hint": "AI 模式下使用。支持 {name}、{group_id}、{count_text} 变量。",
     "type": "text",
     "default": "请根据以下昵称，生成一句简短、温暖、有趣的入群欢迎语（不超过30字，不要带引号）：{name}"
   },
+  "enable_welcome_image": {
+    "label": "🖼️ 默认发送欢迎表情包",
+    "description": "🖼️ 发送欢迎表情包",
+    "hint": "开启后，欢迎消息会从下方上传池随机附带一张图片。每群配置可单独覆盖。",
+    "type": "bool",
+    "default": false
+  },
+  "welcome_images": {
+    "label": "📁 欢迎表情包上传池",
+    "description": "📁 欢迎表情包上传池",
+    "hint": "在这里直接上传欢迎图片；启用表情包后每次随机发送一张。",
+    "type": "file",
+    "file_types": [
+      "png",
+      "jpg",
+      "jpeg",
+      "gif",
+      "webp",
+      "bmp"
+    ],
+    "default": []
+  },
   "cooldown_seconds": {
     "label": "⏱️ 防刷屏冷却 (秒)",
-    "description": "同一用户重复进群触发欢迎的最小间隔时间",
+    "description": "⏱️ 防刷屏冷却（秒）",
+    "hint": "同一用户重复进群触发欢迎的最小间隔时间。",
     "type": "int",
     "default": 300
   },
   "group_whitelist": {
     "label": "✅ 白名单群号",
-    "description": "【白名单模式】填写后，只有这些群会触发欢迎。每行一个群号。",
+    "description": "✅ 白名单群号",
+    "hint": "填写后进入白名单模式，只有这些群会触发欢迎。每行一个群号。",
     "type": "list",
     "default": []
   },
   "group_blacklist": {
     "label": "🚫 黑名单群号",
-    "description": "【黑名单模式】只有当白名单为空时生效。每行一个群号。",
+    "description": "🚫 黑名单群号",
+    "hint": "只有当白名单为空时生效，名单中的群不会触发欢迎。每行一个群号。",
     "type": "list",
     "default": []
   },
   "group_templates": {
-    "label": "💾[系统数据] 群专属配置",
-    "description": "⚠️ 请在群内使用 /welcome set 指令进行配置。",
+    "label": "🏘️ 每群欢迎配置",
+    "description": "🏘️ 每群欢迎配置（JSON）",
+    "hint": "按群号配置 mode(text/ai)、welcome_template、ai_prompt、send_image；images 可填写上传图片文件名，仅从指定图片中随机。",
     "type": "text",
+    "editor_mode": true,
+    "editor_language": "json",
+    "editor_theme": "vs-dark",
     "default": "{}"
   }
 }

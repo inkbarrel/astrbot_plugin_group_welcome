@@ -5,19 +5,19 @@ name: astrbot_plugin_group_welcome
 display_name: Group Welcome (入群欢迎插件)
 
 # 插件的一句话简介
-desc: 一个普通的群欢迎插件awa
+desc: 支持按群配置固定/AI 欢迎词与上传欢迎表情包的群欢迎插件
 
 # 插件的详细帮助信息或指令列表
-help: 插件提供丰富的指令，请查看 README.md 获取详细说明，或发送 /welcome status 查看运行状态。
+help: 可直接在插件设置界面配置每个群的欢迎模式、欢迎词、AI 提示词和欢迎表情包。
 
 # 插件版本号
-version: 2.3.0
+version: 3.0.0
 
 # 作者名
 author: lingyun
 
 # (可选) 你的 GitHub 仓库地址
-repo: "https://github.com/lingyun14beta/astrbot_plugin_group_welcome"
+repo: "https://github.com/inkbarrel/astrbot_plugin_group_welcome"
 
 # (新增) 插件 Logo 文件名
 # 对应你放在插件目录下的 logo.png 文件
